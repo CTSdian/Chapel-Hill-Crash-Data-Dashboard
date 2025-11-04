@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+
+<!-- Leaflet CSS-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
+    integrity="sha256-kLaT2GOSpHechhsozzB+flnD+zUyjE2LlfWPgU04xyI="
+    crossorigin=""/>
+
+<!-- Leaflet JS-->
+<script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"
+    integrity="sha256-WBkoXOwTeyKclOHuWtc+i2uENFpDZ9YPdf5Hf+D7ewM="
+    crossorigin=""></script>
+
+<!-- Leaflet heatmap plugin -->
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
+<!-- PapaParse for CSV parsing (if needed) -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+    /* Make map fill the entire browser viewport but leave room for a top header */
+    :root { --header-height: 56px; }
+    html, body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+    }
+
+    /* Top bar (non-overlay) */
+    #topbar {
+        position: relative;
+        height: var(--header-height);
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        z-index: 1000;
+        font-family: Arial, Helvetica, sans-serif;
+    }
+    #topbar .title {
+        font-size: 18px;
+        font-weight: 600;
+    }
+    /* Right-side controls in topbar */
+    #topbar .controls {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+    .btn {
+        background: #1976d2;
+        color: #fff;
+        border: none;
+        padding: 6px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+    }
+    .btn.secondary {
+        background: #455a64;
+    }
+    .btn[disabled] {
+        opacity: 0.5;
+        cursor: default;
+    }
+    /* small toast for messages */
+    #toast {
+        position: fixed;
+        right: 12px;
+        bottom: 12px;
+        background: rgba(0,0,0,0.8);
+        color: #fff;
+        padding: 8px 12px;
+        border-radius: 6px;
+        z-index: 2000;
+        display: none;
+        font-family: Arial, Helvetica, sans-serif;
+    }
+
+    #map {
+        height: calc(100% - var(--header-height) - 37px);
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        display: block;
+    }
+
+    /* Copyright bar styles */
+    #copyright-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: #f5f5f5;
+        border-top: 1px solid #ddd;
+        padding: 8px 16px;
+        text-align: center;
+        font-size: 12px;
+        color: #666;
+        z-index: 1000;
+        font-family: Arial, Helvetica, sans-serif;
+    }
+
+    /* Popup table styles (make popups readable and compact) */
+    .popup-table { font-family: Arial, Helvetica, sans-serif; font-size: 13px; }
+    .popup-table table { border-collapse: collapse; width: 100%; }
+    .popup-table th { text-align: left; font-weight: 600; padding: 4px 6px; border-bottom: 1px solid #ddd; }
+    .popup-table td { padding: 3px 6px; vertical-align: top; }
+    .popup-table tr + tr td { border-top: 1px solid #f1f1f1; }
+</style>
+
+<title>Chapel Hill Crash Data</title>
+<!-- Top bar header (non-overlay) -->
+<div id="topbar">
+    <div class="title">Chapel Hill Crash Data</div>
+    <div class="controls">
+        <button class="btn" id="btn-main">Main</button>
+        <button class="btn secondary" id="btn-graph">Graph</button>
+        <button class="btn secondary" id="btn-data">Data</button>
+    </div>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="map"></div>
+<div id="copyright-bar">
+    &copy; 2025 Chapel Hill Crash Data
+</div>
+<script>
+    
+    // Tile layers
+    var osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap'
+    });
+
+    var osmHOT = L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap contributors, Tiles style by Humanitarian OpenStreetMap Team hosted by OpenStreetMap France'
+    });
+
+    // Parse CSV and build heat + dots layers.
+    // The CSV should be rows of: lat,lng[,value]
+    // This code detects if lat/lng are swapped (lon first) and swaps them back.
+
+    // Helper to escape text for HTML (prevent broken popup markup)
+    function escapeHtml(text) {
+        if (text === null || text === undefined) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+        // Expose map variable so we can invalidate size on resize
+        var map;
+
+        // First parse the heatmap CSV to build heat layer and initialize the map
+        Papa.parse("heatmap.csv", {
+            download: true,
+            header: true,
+            dynamicTyping: true,
+            skipEmptyLines: true,
+            complete: function(hResults) {
+                var hHeaderMap = {};
+                if (hResults.meta && hResults.meta.fields) {
+                    hResults.meta.fields.forEach(function(f){ hHeaderMap[f.trim().toLowerCase()] = f; });
+                }
+                var hLatKey = hHeaderMap['latitude'] || hHeaderMap['lat'] || 'Latitude';
+                var hLngKey = hHeaderMap['longitude'] || hHeaderMap['lon'] || hHeaderMap['lng'] || 'Longitude';
+                var hValKey = hHeaderMap['count'] || hHeaderMap['value'] || hHeaderMap['weight'] || null;
+
+                var heatData = [];
+                var hrows = hResults.data || [];
+                for (var hi = 0; hi < hrows.length; hi++) {
+                    var hrow = hrows[hi];
+                    var ha = parseFloat(hrow[hLatKey]);
+                    var hb = parseFloat(hrow[hLngKey]);
+                    var hval = hValKey ? parseFloat(hrow[hValKey]) : (hrow['count'] ? parseFloat(hrow['count']) : 1);
+                    // fallback for swapped columns
+                    if (isNaN(ha) || isNaN(hb)) {
+                        var hkeys = Object.keys(hrow);
+                        var hnums = hkeys.map(function(k){ return parseFloat(hrow[k]); }).filter(function(n){ return !isNaN(n); });
+                        if (hnums.length >= 2) { ha = hnums[0]; hb = hnums[1]; }
+                    }
+                    if (isNaN(ha) || isNaN(hb)) continue;
+                    var hlat = ha, hlng = hb;
+                    if (Math.abs(hlat) > 90 && Math.abs(hlng) <= 90) { hlat = hb; hlng = ha; }
+                    heatData.push([hlat, hlng, (isNaN(hval) ? 1 : hval)]);
+                }
+
+                    // create heat layer from parsed data (map will be initialized after data.csv is parsed)
+                    var heat = L.heatLayer(heatData, { radius: 20, maxZoom: 17 });
+
+                // Now parse the data CSV to create dot layer with rich popups
+                Papa.parse("data.csv", {
+                    download: true,
+                    header: true,
+                    dynamicTyping: true,
+                    skipEmptyLines: true,
+                    complete: function(dResults) {
+                        var headerMap = {};
+                        if (dResults.meta && dResults.meta.fields) {
+                            dResults.meta.fields.forEach(function(f){ headerMap[f.trim().toLowerCase()] = f; });
+                        }
+
+                        var latKey = headerMap['latitude'] || headerMap['lat'] || 'Latitude';
+                        var lngKey = headerMap['longitude'] || headerMap['lon'] || headerMap['lng'] || 'Longitude';
+                        var valKey = headerMap['count'] || headerMap['value'] || headerMap['weight'] || null;
+                        var streetKey = headerMap['street'] || headerMap['name'] || 'Street';
+
+                        var rows = dResults.data || [];
+                        var dots = L.layerGroup();
+                        var latSum = 0, lngSum = 0, coordCount = 0;
+
+                        for (var i = 0; i < rows.length; i++) {
+                            var row = rows[i];
+                            var a = parseFloat(row[latKey]);
+                            var b = parseFloat(row[lngKey]);
+                            var street = row[streetKey] || row['Street'] || row['street'] || '';
+
+                            if (isNaN(a) || isNaN(b)) {
+                                var keys = Object.keys(row);
+                                var nums = keys.map(function(k){ return parseFloat(row[k]); }).filter(function(n){ return !isNaN(n); });
+                                if (nums.length >= 2) { a = nums[0]; b = nums[1]; }
+                            }
+                            if (isNaN(a) || isNaN(b)) continue;
+                            var lat = a, lng = b;
+                            if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) { lat = b; lng = a; }
+
+                            // accumulate for geographic center
+                            if (!isNaN(lat) && !isNaN(lng)) { latSum += parseFloat(lat); lngSum += parseFloat(lng); coordCount++; }
+
+                            var circle = L.circle([lat, lng], { color: 'red', fillColor: '#f03', fillOpacity: 0.5, radius: 10 });
+
+                            // Build popup table
+                            var popup = '<div class="popup-table"><table>';
+                            if (street) popup += '<tr><th colspan="2">' + escapeHtml(street) + '</th></tr>';
+                            popup += '<tr><td><strong>Lat</strong></td><td>' + escapeHtml(lat) + '</td></tr>';
+                            popup += '<tr><td><strong>Lng</strong></td><td>' + escapeHtml(lng) + '</td></tr>';
+
+                            var skip = {};
+                            if (latKey) skip[latKey] = true;
+                            if (lngKey) skip[lngKey] = true;
+                            if (valKey) skip[valKey] = true;
+                            if (streetKey) skip[streetKey] = true;
+
+                            for (var k in row) {
+                                if (!row.hasOwnProperty(k)) continue;
+                                if (skip[k]) continue;
+                                var v = row[k];
+                                if (v === null || v === undefined || v === '') continue;
+                                popup += '<tr><td><strong>' + escapeHtml(k) + '</strong></td><td>' + escapeHtml(v) + '</td></tr>';
+                            }
+                            popup += '</table></div>';
+                            circle.bindPopup(popup);
+                            dots.addLayer(circle);
+                        }
+
+                        // compute center from data.csv if possible, otherwise fall back to heatmap first point or default
+                        var defaultCenter = [35.91176605, -79.05953217];
+                        var center = defaultCenter;
+                        if (coordCount > 0) {
+                            center = [latSum / coordCount, lngSum / coordCount];
+                        } else if (heatData.length) {
+                            center = [heatData[0][0], heatData[0][1]];
+                        }
+
+                        // initialize map centered on computed center and add heat layer
+                        map = L.map('map', { center: center, zoom: 13, layers: [osm, heat] });
+                        // Ensure Leaflet redraws correctly when the window size changes
+                        window.addEventListener('resize', function() { if (map) map.invalidateSize(); });
+
+                        // add base and overlay controls
+                        var baseMaps = { "OSM Standard": osm, "OSM HOT": osmHOT };
+                        var overlayMaps = { "Heatmap": heat, "Dots": dots };
+                        var layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+                        
+                        // add dots layer to map by default
+                        map.addLayer(dots);
+                    },
+                    error: function(err){
+                        console.error('CSV parse error', err);
+                        alert('Failed to load data.csv: see console for details');
+                    }
+                });
+            },
+            error: function(err){
+                console.error('CSV parse error', err);
+                alert('Failed to load heatmap.csv: see console for details');
+            }
+        });
+
+    // Topbar button behavior: navigate if page exists, otherwise show 'under development'
+    function showToast(msg, timeout){
+        var t = document.getElementById('toast');
+        t.textContent = msg;
+        t.style.display = 'block';
+        clearTimeout(t._hideTimeout);
+        t._hideTimeout = setTimeout(function(){ t.style.display = 'none'; }, timeout || 3000);
+    }
+
+    function tryNavigate(path) {
+        // try fetching resource to check existence (works when served over HTTP)
+        fetch(path, { method: 'HEAD' }).then(function(resp){
+            if (resp.ok) {
+                window.location.href = path;
+            } else {
+                showToast('"' + path + '" is under development');
+            }
+        }).catch(function(){
+            // fetch failed (probably file not found or running from file://) - show message
+            showToast('"' + path + '" is under development');
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function(){
+        document.getElementById('btn-main').addEventListener('click', function(){
+            // already on main page; provide feedback
+            showToast('You are already on the main page');
+        });
+        document.getElementById('btn-graph').addEventListener('click', function(){
+            tryNavigate('graph.html');
+        });
+        document.getElementById('btn-data').addEventListener('click', function(){
+            tryNavigate('data.html');
+        });
+    });
+
+</script>

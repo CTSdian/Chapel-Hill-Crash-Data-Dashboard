@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Chapel Hill Crash Data — Graphs</title>
+
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- PapaParse -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+    :root { --header-height: 56px; }
+    html, body { height: 100%; margin: 0; padding: 0; }
+    body { font-family: Arial, Helvetica, sans-serif; }
+    /* Top bar (copy style from main page) */
+    #topbar {
+        position: relative;
+        height: var(--header-height);
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        z-index: 1000;
+    }
+    #topbar .title { font-size: 18px; font-weight: 600; }
+    #topbar .controls { margin-left: auto; display:flex; gap:8px; }
+    .btn { background: #1976d2; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    .btn.secondary { background:#455a64; }
+    #content { height: calc(100% - var(--header-height)); display:flex; flex-direction:column; }
+    #chart-container { flex: 1 1 auto; display:flex; align-items:stretch; padding:12px; }
+    #chart-canvas { width:100%; height:100%; }
+    /* Controls row */
+    #controls-row { padding: 8px 12px; display:flex; gap:8px; align-items:center; }
+    #toast { position: fixed; right:12px; bottom:12px; background: rgba(0,0,0,0.8); color:#fff; padding:8px 12px; border-radius:6px; display:none; z-index:2000; }
+    .small { font-size:13px; color:#333; }
+    
+    /* Copyright bar styles */
+    #copyright-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: #f5f5f5;
+        border-top: 1px solid #ddd;
+        padding: 8px 16px;
+        text-align: center;
+        font-size: 12px;
+        color: #666;
+        z-index: 1000;
+    }
+    
+    /* Adjust content area for copyright bar */
+    #content {
+        height: calc(100% - var(--header-height) - 37px);
+        display: flex;
+        flex-direction: column;
+    }
+</style>
+
+<div id="topbar">
+    <div class="title">Chapel Hill Crash Data</div>
+    <div class="controls">
+        <button class="btn" id="btn-main">Main</button>
+        <button class="btn secondary" id="btn-graph">Graph</button>
+        <button class="btn secondary" id="btn-data">Data</button>
+    </div>
+</div>
+
+<div id="content">
+    <div id="controls-row">
+        <label class="small">Showing top</label>
+        <select id="topN">
+            <option value="10">10</option>
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="0">All</option>
+        </select>
+        <button class="btn" id="btn-update">Update Chart</button>
+        <div style="flex:1"></div>
+        <div class="small" id="summary">Loading data...</div>
+    </div>
+    <div id="chart-container">
+        <canvas id="chart-canvas"></canvas>
+    </div>
+</div>
+
+<div id="copyright-bar">
+    &copy; 2025 Chapel Hill Crash Data
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+    // toast helper
+    function showToast(msg, timeout){
+        var t = document.getElementById('toast');
+        t.textContent = msg; t.style.display='block'; clearTimeout(t._hide);
+        t._hide = setTimeout(function(){ t.style.display='none'; }, timeout||3000);
+    }
+
+    function tryNavigate(path){
+        fetch(path, { method: 'HEAD' }).then(function(resp){
+            if (resp.ok) window.location.href = path; else showToast(path + ' is under development');
+        }).catch(function(){ showToast(path + ' is under development'); });
+    }
+
+    document.getElementById('btn-main').addEventListener('click', function(){ tryNavigate('heatmap_dotmap.html'); });
+    document.getElementById('btn-graph').addEventListener('click', function(){ showToast('You are already on the graph page'); });
+    document.getElementById('btn-data').addEventListener('click', function(){ tryNavigate('data.html'); });
+
+    // Chart instance
+    var chart = null;
+
+    function aggregateByStreet(rows){
+        var sums = {};
+        for(var i=0;i<rows.length;i++){
+            var r = rows[i];
+            var street = (r['Street'] || r['street'] || r['Street '] || '').toString();
+            if (!street) continue;
+            var v = parseFloat(r['count']);
+            if (isNaN(v)) v = 1;
+            sums[street] = (sums[street] || 0) + v;
+        }
+        return sums;
+    }
+
+    function prepareDataset(sums, topN){
+        // convert to array and sort by total desc
+        var arr = Object.keys(sums).map(function(k){ return {street:k, total: sums[k]}; });
+        arr.sort(function(a,b){ return b.total - a.total; });
+        if (topN>0) arr = arr.slice(0, topN);
+        return arr;
+    }
+
+    function renderChart(arr){
+        var labels = arr.map(function(d){ return d.street; });
+        var data = arr.map(function(d){ return d.total; });
+        var ctx = document.getElementById('chart-canvas').getContext('2d');
+        if (chart) chart.destroy();
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Total count per street',
+                    data: data,
+                    borderColor: '#1976d2',
+                    backgroundColor: 'rgba(25,118,210,0.15)',
+                    fill: true,
+                    tension: 0.2,
+                    pointRadius: 3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: true } },
+                scales: {
+                    x: { ticks: { maxRotation: 90, minRotation: 45 }, title: { display:true, text:'Street' } },
+                    y: { title: { display:true, text:'Total count' }, beginAtZero:true }
+                }
+            }
+        });
+    }
+
+    // load CSV and build chart
+    Papa.parse('data.csv', { download:true, header:true, dynamicTyping:true, skipEmptyLines:true,
+        complete: function(results){
+            var rows = results.data;
+            if (!rows || !rows.length){ showToast('No data found in data.csv'); document.getElementById('summary').textContent='No data'; return; }
+            var sums = aggregateByStreet(rows);
+            var totalStreets = Object.keys(sums).length;
+            var totalCounts = Object.values(sums).reduce(function(a,b){ return a+b; },0);
+            document.getElementById('summary').textContent = totalStreets + ' streets, total count ' + totalCounts;
+
+            function update(){
+                var topN = parseInt(document.getElementById('topN').value,10);
+                var arr = prepareDataset(sums, topN);
+                renderChart(arr);
+            }
+
+            document.getElementById('btn-update').addEventListener('click', update);
+            // initial render
+            update();
+        }, error:function(e){ showToast('Failed to load data.csv'); }
+    });
+
+    // Resize canvas when window changes
+    window.addEventListener('resize', function(){ if (chart) chart.resize(); });
+
+</script>

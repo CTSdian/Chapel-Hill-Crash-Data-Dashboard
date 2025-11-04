@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Chapel Hill Crash Data — Raw Data</title>
+
+<!-- jQuery -->
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<!-- DataTables CSS -->
+<link href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css" rel="stylesheet">
+<link href="https://cdn.datatables.net/buttons/2.4.1/css/buttons.dataTables.min.css" rel="stylesheet">
+<!-- DataTables JS -->
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/buttons/2.4.1/js/dataTables.buttons.min.js"></script>
+<script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.html5.min.js"></script>
+<script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.colVis.min.js"></script>
+<!-- PapaParse for CSV -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+    :root { --header-height: 56px; }
+    html, body { height: 100%; margin: 0; padding: 0; }
+    body { font-family: Arial, Helvetica, sans-serif; }
+    
+    /* Top bar (copy style from main page) */
+    #topbar {
+        position: relative;
+        height: var(--header-height);
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        z-index: 1000;
+    }
+    #topbar .title { font-size: 18px; font-weight: 600; }
+    #topbar .controls { margin-left: auto; display:flex; gap:8px; }
+    .btn { background: #1976d2; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    .btn.secondary { background:#455a64; }
+    
+    /* Content area with table */
+    #content {
+        height: calc(100% - var(--header-height) - 37px);
+        padding: 16px 16px 50px 16px;
+        overflow: auto;
+    }
+    
+    /* Excel-like DataTables customization */
+    .dataTables_wrapper {
+        padding: 8px;
+        background: #fff;
+        border: none;
+    }
+    table.dataTable {
+        border-collapse: collapse !important;
+        border-spacing: 0 !important;
+    }
+    table.dataTable thead th {
+        background: #f0f0f0;
+        border: 1px solid #ddd !important;
+        border-bottom: 2px solid #bbb !important;
+        font-weight: bold;
+        color: #333;
+        padding: 8px !important;
+    }
+    table.dataTable tbody td {
+        border: 1px solid #ddd;
+        padding: 6px 8px !important;
+    }
+    table.dataTable tbody tr:nth-child(even) {
+        background-color: #f9f9f9;
+    }
+    table.dataTable tbody tr:hover {
+        background-color: #f0f7ff;
+    }
+    .dt-buttons { 
+        margin: 0 0 16px 0;
+        display: flex;
+        gap: 8px;
+    }
+    .dt-button {
+        border: 1px solid #ccc !important;
+        background: linear-gradient(to bottom, #fff 0%, #f4f4f4 100%) !important;
+        color: #333 !important;
+        border-radius: 3px !important;
+        padding: 6px 12px !important;
+        font-size: 13px !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+    }
+    .dt-button:hover {
+        background: linear-gradient(to bottom, #f8f8f8 0%, #e8e8e8 100%) !important;
+    }
+    .dt-button.buttons-columnVisibility {
+        margin-right: 4px !important;
+    }
+    .dt-button.buttons-columnVisibility.active {
+        background: #e3f2fd !important;
+        border-color: #90caf9 !important;
+    }
+    .dataTables_info {
+        color: #666;
+        padding: 8px 0;
+    }
+    .dataTables_paginate {
+        padding-top: 8px;
+    }
+    .dataTables_paginate .paginate_button {
+        border: 1px solid #ddd !important;
+        background: linear-gradient(to bottom, #fff 0%, #f4f4f4 100%) !important;
+        margin: 0 4px;
+    }
+    .dataTables_paginate .paginate_button.current {
+        background: #1976d2 !important;
+        color: white !important;
+        border-color: #1565c0 !important;
+    }
+    
+    /* Length selector styling */
+    .dataTables_length {
+        margin-right: 8px;
+    }
+    .dataTables_length select {
+        border: 1px solid #ccc !important;
+        background: linear-gradient(to bottom, #fff 0%, #f4f4f4 100%) !important;
+        color: #333 !important;
+        border-radius: 3px !important;
+        padding: 6px 12px !important;
+        font-size: 13px !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+        margin: 0 4px;
+    }
+    .dataTables_length select:hover {
+        background: linear-gradient(to bottom, #f8f8f8 0%, #e8e8e8 100%) !important;
+    }
+    .dataTables_length label {
+        font-size: 13px;
+        color: #333;
+    }
+    
+    #toast {
+        position: fixed;
+        right: 12px;
+        bottom: 12px;
+        background: rgba(0,0,0,0.8);
+        color: #fff;
+        padding: 8px 12px;
+        border-radius: 6px;
+        display: none;
+        z-index: 2000;
+    }
+    
+    /* Copyright bar styles */
+    #copyright-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: #f5f5f5;
+        border-top: 1px solid #ddd;
+        padding: 8px 16px;
+        text-align: center;
+        font-size: 12px;
+        color: #666;
+        z-index: 1000;
+    }
+    
+    /* Adjust content area to account for copyright bar */
+    #content {
+        height: calc(100% - var(--header-height) - 37px);
+    }
+</style>
+
+<div id="topbar">
+    <div class="title">Chapel Hill Crash Data</div>
+    <div class="controls">
+        <button class="btn" id="btn-main">Main</button>
+        <button class="btn secondary" id="btn-graph">Graph</button>
+        <button class="btn secondary" id="btn-data">Data</button>
+    </div>
+</div>
+
+<div id="content">
+    <table id="data-table" class="display" style="width:100%">
+        <thead>
+            <tr>
+                <th>Street</th>
+                <th>Latitude</th>
+                <th>Longitude</th>
+                <th>Count</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<div id="copyright-bar">
+    &copy; 2025 Chapel Hill Crash Data
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+    // toast helper
+    function showToast(msg, timeout){
+        var t = document.getElementById('toast');
+        t.textContent = msg;
+        t.style.display = 'block';
+        clearTimeout(t._hideTimeout);
+        t._hideTimeout = setTimeout(function(){ t.style.display = 'none'; }, timeout || 3000);
+    }
+
+    function tryNavigate(path) {
+        fetch(path, { method: 'HEAD' }).then(function(resp){
+            if (resp.ok) window.location.href = path;
+            else showToast(path + ' is under development');
+        }).catch(function(){ showToast(path + ' is under development'); });
+    }
+
+    // Navigation buttons
+    document.getElementById('btn-main').addEventListener('click', function(){ tryNavigate('heatmap_dotmap.html'); });
+    document.getElementById('btn-graph').addEventListener('click', function(){ tryNavigate('graph.html'); });
+    document.getElementById('btn-data').addEventListener('click', function(){ showToast('You are already on the data page'); });
+
+    // Initialize DataTable with CSV data
+    Papa.parse('data.csv', {
+        download: true,
+        header: true,
+        dynamicTyping: true,
+        skipEmptyLines: true,
+        complete: function(results) {
+            if (!results.data || !results.data.length) {
+                showToast('No data found in data.csv');
+                return;
+            }
+
+            // determine fields (use meta.fields if available, otherwise infer)
+            var fields = (results.meta && results.meta.fields && results.meta.fields.length) ? results.meta.fields.slice() : Object.keys(results.data[0]);
+
+            // rebuild table header to match CSV fields
+            var thead = '<tr>' + fields.map(function(f){ return '<th>' + f + '</th>'; }).join('') + '</tr>';
+            $('#data-table thead').html(thead);
+
+            // construct DataTables column definitions dynamically
+            var cols = fields.map(function(f){ return { data: f, title: f }; });
+
+            // Initialize DataTable
+            var table = $('#data-table').DataTable({
+                data: results.data,
+                columns: cols,
+                pageLength: 50,  // rows per page
+                lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
+                order: [[0, 'asc']],  // default sort by first column
+                dom: 'Blrtip',  // buttons, length, table, info, pagination (removed filter)
+                buttons: [
+                    'colvis',  // Column visibility button
+                    {
+                        extend: 'csv',
+                        text: 'Export CSV',
+                        filename: 'chapel_hill_crash_data',
+                        exportOptions: {
+                            columns: ':visible'  // only export visible columns
+                        }
+                    },
+                    {
+                        extend: 'copy',
+                        text: 'Copy to Clipboard',
+                        exportOptions: {
+                            columns: ':visible'  // only copy visible columns
+                        }
+                    }
+                ],
+                scrollY: 'calc(100vh - 250px)',  // scroll vertically, leave room for header/footer
+                scrollCollapse: true,
+                processing: true,  // show processing indicator
+                language: {
+                    lengthMenu: 'Entries per page: _MENU_',
+                    processing: 'Loading...'
+                }
+            });
+
+            showToast('Loaded ' + results.data.length + ' records');
+        },
+        error: function(err) {
+            showToast('Failed to load data.csv');
+            console.error('CSV parse error:', err);
+        }
+    });
+</script>
